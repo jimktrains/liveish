@@ -82,10 +82,11 @@ def event_loop(readers, env):
 
     return env
 
-# ^` to get a ^ (^` would render a space, so that's pointless :))
+# ^` to get a ^ (^` would render a space, usful since we strip lines
+# ^a to get a ^
 def ctrl_replacer(match):
     c = match.group(1)
-    if (c == '`'):
+    if (c == 'a'):
         return '^'
     return chr(ord(c) - ord('@'))
         

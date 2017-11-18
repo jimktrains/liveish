@@ -1,0 +1,29 @@
+>\^L
+
+This is a sample script
+
+> echo this is input
+
+This a testing line
+
+This is another
+
+> date
+
+> cat
+> hello
+>\^D
+
+vim test
+
+> vi
+>\i
+>\this is a test
+>\^[
+> :w! /tmp/blah
+> :q
+>\^L
+
+Let's show the date again
+
+> date

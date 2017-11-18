@@ -1,0 +1,9 @@
+!command /usr/bin/env psql
+
+List databases!
+
+> \l
+
+List tables!
+
+> \d

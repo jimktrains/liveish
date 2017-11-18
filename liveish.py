@@ -15,6 +15,7 @@ import fcntl
 import signal
 import selectors
 import termios
+import time
 
 config = {
     'command': '/usr/bin/env bash',
@@ -22,6 +23,7 @@ config = {
     'serverport': 7890,
     'viewport': '80x24',
     'env.TERM': 'vt100',
+    'auto-delay': '0.5',
 }
 
 
@@ -57,31 +59,41 @@ def create_send_to_all(host, port):
         broadcast.sendto(x.encode('utf8'), (host, int(port)))
     return tmp
 
-def event_loop(readers):
+def event_loop(readers, env):
     sel = selectors.DefaultSelector()
     for (channel, callback) in readers:
         sel.register(channel, selectors.EVENT_READ, callback)
 
     keep_selecting = True
-    ret = {}
     while keep_selecting:
         events = sel.select()
         for key, mask in events:
             callback = key.data
-            r = callback(key.fileobj, mask)
+            r = callback(key.fileobj, mask, env)
             if r is not None:
                 if type(r) == tuple:
                     (k, v) = r
-                    ret[k] = v
+                    env[k] = v
                 else:
                     keep_selecting = r
 
     for (channel, callback) in readers:
         sel.unregister(channel)
 
-    return ret
+    return env
 
-def process_thread(output_callback, options, term_in, cmdq, meta_out, application_launched_barrier):
+# ^` to get a ^ (^` would render a space, so that's pointless :))
+def ctrl_replacer(match):
+    c = match.group(1)
+    if (c == '`'):
+        return '^'
+    return chr(ord(c) - ord('@'))
+        
+def format_command(cmd):
+    cmd = re.sub('\^(.)', ctrl_replacer, cmd)
+    return cmd
+
+def process_thread(output_callback, noecho_callback, options, term_in, cmdq, meta_out, application_launched_barrier):
     command = shlex.split(options['command'])
     size = list(map(int, options['viewport'].split('x', 1)))
 
@@ -100,19 +112,33 @@ def process_thread(output_callback, options, term_in, cmdq, meta_out, applicatio
     meta_out.sendall(b"done")
     application_launched_barrier.wait()
 
-    def handle_termin(conn, mask):
+    def handle_termin(conn, mask, env):
         line = conn.readline()
         if len(line) != 1:
             line = line.strip()
         cstdin.write(line)
         cstdin.flush()
-    def handle_cstdout(conn, mask):
+    def handle_cstdout(conn, mask, env):
         v = conn.read()
-        output_callback(v)
-    def handle_cmdq(cmdq, mask):
-        cmd = cmdq.readline().strip()
-        if cmd == 'exit':
-            return False
+        if env['echo']:
+            output_callback(v)
+        else:
+            noecho_callback(v)
+    def handle_cmdq(cmdq, mask, env):
+        cmd = cmdq.readline()
+        while cmd:
+            cmd = cmd.strip()
+            if cmd == 'exit':
+                return False
+            else:
+                (op, param) = cmd.split(' ', 1)
+                if op in ["echo", "no-echo"] :
+                    param = format_command(param)
+                    cstdin.write(param)
+                    cstdin.flush()
+                    return ('echo', op == "echo")
+            cmd = cmdq.readline()
+
 
     readers = [
         [term_in, handle_termin],
@@ -120,13 +146,11 @@ def process_thread(output_callback, options, term_in, cmdq, meta_out, applicatio
         [cmdq, handle_cmdq],
     ]
 
-    event_loop(readers)
+    event_loop(readers, {"echo": True})
 
     os.kill(child_pid, signal.SIGTERM)
-        
 
-
-with open('script') as scriptfile:
+with open(sys.argv[1]) as scriptfile:
     told = 0
     line = scriptfile.readline()
     while len(line) > 0 and line[0] == '!':
@@ -148,6 +172,7 @@ with open('script') as scriptfile:
 
     thread = Thread(target = process_thread, args = (
         sendtoall, 
+        lambda x : sys.stdout.write(x),
         config, 
         termin_out, 
         cmdq_out, 
@@ -159,7 +184,7 @@ with open('script') as scriptfile:
     application_launched_barrier.wait()
 
     meta = None
-    def handle_meta(conn, mask):
+    def handle_meta(conn, mask, env):
         length = ord(conn.recv(1))
         line = conn.recv(length).decode('utf8')
         if line == 'done':
@@ -167,7 +192,7 @@ with open('script') as scriptfile:
         (key, val) = line.split(' ')
         return (key, val)
 
-    meta = event_loop([[meta_in, handle_meta]])
+    meta = event_loop([[meta_in, handle_meta]], {})
     env = get_env(config)
 
     print(config['command'] + " started on pid " + str(meta['child-pid']))
@@ -178,23 +203,39 @@ with open('script') as scriptfile:
     print("================")
 
 
-    # ^` to get a ^ (^` would render a space, so that's pointless :))
-    def ctrl_replacer(match):
-        c = match.group(1)
-        if (c == '`'):
-            return '^'
-        return chr(ord(c) - ord('@'))
 
     try:
         for line in scriptfile:
-            if line[0] == '>':
+            if line[0] == '#':
+                continue
+            elif line[0] == '!':
+                (key, value) = line.split(" ", 1)
+                key = key[1:]
+                config[key] = value
+            elif line[0] == '>':
                 cmd = line[2:]
-                input("type? " + cmd.strip())
-                cmd = re.sub('\^(.)', ctrl_replacer, cmd)
-                termin_in.sendall(cmd.encode('utf8'))
-                if (line[1] != '\\'):
+                if (line[1] == ' '):
+                    input("type? " + cmd.strip())
+                elif (line[1] == '\\'):
+                    input("type&run? " + cmd.strip())
+                elif (line[1] == '+'):
+                    print("auto-run? " + cmd.strip())
+                cmdq_in.sendall(("echo " + cmd).encode('utf8'))
+                if (line[1] == ' '):
                     input("run?")
-                    termin_in.sendall(b"\n")
+                    cmdq_in.sendall(b"echo ^J\n")
+                if (line[1] == '+'):
+                    cmdq_in.sendall(b"echo ^J\n")
+                    time.sleep(float(config['auto-delay']))
+            elif line[0] == '+':
+                cmd = line[2:].strip()
+                print("auto command " + cmd)
+                cmdq_in.sendall(("no-echo " + cmd + "^J\n").encode('utf8'))
+                time.sleep(float(config['auto-delay']))
+            elif line[0] == '@':
+                duration = float(line[2:])
+                print("sleeping for " + str(duration))
+                time.sleep(duration)
             else:
                 print(line.strip())
         input("exit?")

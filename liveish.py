@@ -177,6 +177,8 @@ config = {
     'host': '127.0.0.1',
     'port': '7890',
     'auto-delay': 0.500,
+    'type.average_delay': 50,
+    'type.stddev_delay': 50,
 }
 
 q = queue.Queue()
@@ -200,7 +202,7 @@ with open(sys.argv[1]) as scriptfile:
     application_launched_barrier = Barrier(2, timeout=5)
     exit_now = Event()
     thread = Thread(target = worker, args = (
-        '/usr/bin/env bash',
+        config['command'],
         q,
         m,
         exit_now,
@@ -236,7 +238,7 @@ with open(sys.argv[1]) as scriptfile:
                     input("type&run? " + cmd)
                 elif (line[1] == '+'):
                     print("auto-run? " + cmd)
-                q.put(QInput(cmd))
+                q.put(QInput(cmd, config['type.average_delay'], config['type.stddev_delay']))
                 if (line[1] == ' '):
                     input("run?")
                     q.put(QEnter())
@@ -261,8 +263,6 @@ with open(sys.argv[1]) as scriptfile:
         input("exit?")
     except KeyboardInterrupt:
         pass
-    except:
-        print(sys.exc_info()[0])
     finally:
         q.put(QExitNow())
         exit_now.set()

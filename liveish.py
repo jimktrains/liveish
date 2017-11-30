@@ -152,9 +152,9 @@ def worker(command, cmdq, metaq, exit_now, not_accepting_input, echo_callback, n
                     not_accepting_input.set()
                     if bytes_from_terminal is not None:
                         if text_thus_far is None:
-                            text_thus_far = bytes_from_terminal.encode('utf8')
+                            text_thus_far = bytes_from_terminal.decode('utf8')
                         else:
-                            text_thus_far += bytes_from_terminal.encode('utf8')
+                            text_thus_far += bytes_from_terminal.decode('utf8')
                         if expect_text in text_thus_far:
                             text_thus_far = None
                             expect_text = False
@@ -197,6 +197,8 @@ config = {
     'command': '/usr/bin/env bash',
     'host': '127.0.0.1',
     'port': '7890',
+    'scripthost': '127.0.0.1',
+    'scriptport': '7891',
     'auto-delay': 0.500,
     'type.average_delay': 20,
     'type.stddev_delay': 30,
@@ -431,7 +433,9 @@ with open(sys.argv[1]) as scriptfile:
     thread.start()
 
     hostport = (config['host'], int(config['port']))
+    scripthostport = (config['scripthost'], int(config['scriptport']))
     print("Sending output to " + ":".join(map(str, hostport)))
+    print("Sending script to " + ":".join(map(str, scripthostport)))
 
     application_launched_barrier.wait()
 
@@ -463,6 +467,7 @@ with open(sys.argv[1]) as scriptfile:
                 if cmd == 'pause-script':
                     input('<paused>')
                     print()
+                    sock.sendto("\n".encode('utf8'), scripthostport)
                 elif cmd == "comment":
                     pass
                 elif cmd == "config":
@@ -539,6 +544,9 @@ with open(sys.argv[1]) as scriptfile:
                         exit_now.set()
                 else:
                     print(line.strip())
+                    sock.sendto((line + "\n").encode('utf8'), scripthostport)
+                    
+
         notified = False
         keep_trying = True
         while keep_trying and not exit_now.is_set():

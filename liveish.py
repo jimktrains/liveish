@@ -78,6 +78,10 @@ class QSleep:
     def __init__(self, secs):
         self.until = time.time() + secs
 
+class QExpect:
+    def __init__(self, text):
+        self.text = text
+
 class QInput:
     def __init__(self, str_in, delay_mean=0, delay_std=0):
         self.str_in = self.format(str_in)
@@ -125,6 +129,8 @@ def worker(command, cmdq, metaq, exit_now, not_accepting_input, echo_callback, n
             last_output_at = time.time()
             wait_for_output = False
             exit_after_output = False
+            expect_text = False
+            text_thus_far = None
             while True and not exit_now.is_set():
                 bytes_from_terminal = terminal.read(128)
                 if bytes_from_terminal is not None:
@@ -140,9 +146,18 @@ def worker(command, cmdq, metaq, exit_now, not_accepting_input, echo_callback, n
                     not_accepting_input.set()
                     if time_since_last_output > wait_for_output:
                         wait_for_output = False
-                        not_accepting_input.clear()
                         if exit_after_output:
                             break
+                elif expect_text != False:
+                    not_accepting_input.set()
+                    if bytes_from_terminal is not None:
+                        if text_thus_far is None:
+                            text_thus_far = bytes_from_terminal.encode('utf8')
+                        else:
+                            text_thus_far += bytes_from_terminal.encode('utf8')
+                        if expect_text in text_thus_far:
+                            text_thus_far = None
+                            expect_text = False
                 elif last_input != False:
                     if last_input.next_time < time.time():
                         if last_input.delay_mean == 0:
@@ -156,12 +171,11 @@ def worker(command, cmdq, metaq, exit_now, not_accepting_input, echo_callback, n
                             last_input.str_in = last_input.str_in[1:]
                             if len(last_input.str_in) == 0:
                                 last_input = False
-                                not_accepting_input.clear()
                 elif sleep_until != False:
                     if time.time() > sleep_until:
                         sleep_until = False
                 else:
-                    sleep_until = False
+                    not_accepting_input.clear()
                     if not cmdq.empty():
                         cmd = cmdq.get()
                         if isinstance(cmd, QWaitForOutput):
@@ -173,7 +187,10 @@ def worker(command, cmdq, metaq, exit_now, not_accepting_input, echo_callback, n
                             sleep_until = cmd.until
                         elif isinstance(cmd, QInput):
                             last_input = cmd
+                        elif isinstance(cmd, QExpect):
+                            expect_text = cmd.text
     finally:
+        not_accepting_input.clear()
         exit_now.set()
 
 config = {
@@ -460,6 +477,11 @@ with open(sys.argv[1]) as scriptfile:
                             print("<Waiting on to accept input>")
                             notified = True
                     else:
+                        if len(line) == 0:
+                            line = '^J'
+                        elif (len(line) > 2 and line[-2:] == "^["):
+                            q.put(QInput('^@'))
+
                         if cmd == "type-run":
                             input("type-run! " + line)
                             q.put(QInput(line, config['type.average_delay'], config['type.stddev_delay']))
@@ -480,8 +502,6 @@ with open(sys.argv[1]) as scriptfile:
                         elif cmd == "type":
                             input("type-only? " + line)
                             q.put(QInput(line, config['type.average_delay'], config['type.stddev_delay']))
-                            if (line == "^["):
-                                q.put(QInput('^@'))
                             q.put(QWaitForOutput(config['auto-delay']))
                 elif cmd == "auto-run-no-echo":
                     if not q.empty() or not_accepting_input.is_set():
@@ -499,6 +519,8 @@ with open(sys.argv[1]) as scriptfile:
                         q.put(QEcho(True))
                 elif cmd == "wait-for-output":
                     q.put(QWaitForOutput(config['auto-delay']))
+                elif cmd == "expect":
+                    q.put(QExpect(line))
                 elif cmd == "sleep":
                     duration = float(line)
                     print("sleeping for " + str(duration))
